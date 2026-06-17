@@ -1,8 +1,9 @@
+import asyncio
 import os
 from threading import Thread
 
 from pysnmp.entity import engine, config
-from pysnmp.carrier.asyncore.dgram import udp
+from pysnmp.carrier.asyncio.dgram import udp
 from pysnmp.entity.rfc3413 import ntfrcv
 
 import paho.mqtt.client as mqtt
@@ -17,18 +18,22 @@ class App(Thread):
         self.mqtt_client = mqtt_client
 
     def run(self):
+        # pysnmp's asyncio carrier grabs asyncio.get_event_loop() at engine
+        # construction; on a non-main thread that raises unless a loop is set.
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
         snmpEngine = engine.SnmpEngine()
-        config.addV1System(snmpEngine, COMMUNITYSTRING, COMMUNITYSTRING)
+        config.add_v1_system(snmpEngine, COMMUNITYSTRING, COMMUNITYSTRING)
         ntfrcv.NotificationReceiver(snmpEngine, self.cbFun)
         self.add_transport(snmpEngine, PORT)
-        snmpEngine.transportDispatcher.jobStarted(1)
+        snmpEngine.transport_dispatcher.job_started(1)
         try:
             print("Trap Listener started .....")
             print("To Stop Press Ctrl+c")
             print("\n")
-            snmpEngine.transportDispatcher.runDispatcher()
+            snmpEngine.open_dispatcher()
         except:
-            snmpEngine.transportDispatcher.closeDispatcher()
+            snmpEngine.close_dispatcher()
             raise
 
     def add_transport(self, snmpEngine, PORT):
@@ -37,33 +42,37 @@ class App(Thread):
         :return:
         """
         try:
-            config.addTransport(
+            config.add_transport(
                 snmpEngine,
-                udp.domainName,
-                udp.UdpTransport().openServerMode(('0.0.0.0',
-                                                   int(PORT)))
+                udp.DOMAIN_NAME,
+                udp.UdpTransport().open_server_mode(('0.0.0.0',
+                                                     int(PORT)))
             )
         except Exception as e:
             print("{} Port Binding Failed the Provided Port {} is in Use".format(e, PORT))
 
     def cbFun(self, snmpEngine, stateReference, contextEngineId, context, *_):
         print(stateReference)
-        execContext = snmpEngine.observer.getExecutionContext(
-            'rfc3412.receiveMessage:request'
-        )
-        print('#Notification from %s \n#ContextEngineId: "%s" \n#SecurityName "%s"' %
-              (execContext['transportAddress'],
-               contextEngineId,
-               execContext['securityName'])
-              )
+        # Diagnostic only: must never prevent the trap from being published.
+        try:
+            execContext = snmpEngine.observer.get_execution_context(
+                'rfc3412.receiveMessage:request'
+            )
+            print('#Notification from %s \n#ContextEngineId: "%s" \n#SecurityName "%s"' %
+                  (execContext['transportAddress'],
+                   contextEngineId,
+                   execContext['securityName'])
+                  )
+        except Exception as e:
+            print(f'#execution context unavailable: {e}')
         payload = context[-1][-1]
         print(f'#Payload: {payload}')
-        mqtt_client.publish(f'fac/{payload}')
+        self.mqtt_client.publish(f'fac/{payload}')
 
 
 if __name__ == "__main__":
     while True:
-        mqtt_client = mqtt.Client(client_id='fac')
+        mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id='fac')
         mqtt_client.tls_set(
             '/opt/tls/ca_certificate.pem',
             '/opt/tls/client_certificate.pem',
