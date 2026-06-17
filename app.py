@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 from threading import Thread
 
 from pysnmp.entity import engine, config
@@ -65,6 +66,11 @@ class App(Thread):
                   )
         except Exception as e:
             print(f'#execution context unavailable: {e}')
+        # NOTE: `context` is the callback's 4th positional arg (contextName), NOT
+        # the trap varBinds. This is pre-existing behaviour kept verbatim to
+        # preserve the fac/{payload} wire format that the manager parses. Do NOT
+        # switch this to varBinds without verifying against a real BMZ trap —
+        # changing what is published here breaks the fire-alarm scram path.
         payload = context[-1][-1]
         print(f'#Payload: {payload}')
         self.mqtt_client.publish(f'fac/{payload}')
@@ -73,6 +79,7 @@ class App(Thread):
 if __name__ == "__main__":
     while True:
         mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id='fac')
+        mqtt_client.on_connect = print  # set before connect so CONNACK isn't missed
         mqtt_client.tls_set(
             '/opt/tls/ca_certificate.pem',
             '/opt/tls/client_certificate.pem',
@@ -80,7 +87,16 @@ if __name__ == "__main__":
         )
         mqtt_client.connect(os.environ['MQTT_HOSTNAME'], 8883)
         mqtt_client.loop_start()
-        mqtt_client.on_connect = print
         app = App(mqtt_client)
-        app.start()
-        app.join()
+        try:
+            app.start()
+            app.join()
+        finally:
+            # Tear down the network thread + connection before re-looping so a
+            # dead SNMP dispatcher doesn't leak an MQTT client each iteration.
+            mqtt_client.loop_stop()
+            try:
+                mqtt_client.disconnect()
+            except Exception:
+                pass
+        time.sleep(5)
