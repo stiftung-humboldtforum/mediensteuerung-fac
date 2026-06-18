@@ -52,7 +52,7 @@ class App(Thread):
         except Exception as e:
             print("{} Port Binding Failed the Provided Port {} is in Use".format(e, PORT))
 
-    def cbFun(self, snmpEngine, stateReference, contextEngineId, context, *_):
+    def cbFun(self, snmpEngine, stateReference, contextEngineId, contextName, varBinds, *_):
         print(stateReference)
         # Diagnostic only: must never prevent the trap from being published.
         try:
@@ -66,14 +66,21 @@ class App(Thread):
                   )
         except Exception as e:
             print(f'#execution context unavailable: {e}')
-        # NOTE: `context` is the callback's 4th positional arg (contextName), NOT
-        # the trap varBinds. This is pre-existing behaviour kept verbatim to
-        # preserve the fac/{payload} wire format that the manager parses. Do NOT
-        # switch this to varBinds without verifying against a real BMZ trap —
-        # changing what is published here breaks the fire-alarm scram path.
-        payload = context[-1][-1]
-        print(f'#Payload: {payload}')
-        self.mqtt_client.publish(f'fac/{payload}')
+        # pysnmp 4.x internally dispatched a 5-arg LEGACY callback where the 4th
+        # positional arg was the varBinds; pysnmp 7.x removed that stub and ALWAYS
+        # calls the 6-arg modern form (contextName, varBinds, cbCtx). The old
+        # `context[-1][-1]` therefore read the varBinds value under 4.x but reads
+        # the (empty) contextName under 7.x -> IndexError -> the trap was never
+        # published (fire-alarm scram path silently dead). Read varBinds[-1][-1]
+        # to restore the byte-identical fac/<method>/<ids> wire form the manager
+        # parses. Guarded so a malformed trap can't kill the dispatcher thread.
+        # ⚠️ Verify against a real BMZ trap before deploying (Review-Runde 4 #1).
+        try:
+            payload = varBinds[-1][-1]
+            print(f'#Payload: {payload}')
+            self.mqtt_client.publish(f'fac/{payload}')
+        except Exception as e:
+            print(f'#malformed trap, not published: {e}')
 
 
 if __name__ == "__main__":
