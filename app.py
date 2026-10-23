@@ -11,6 +11,10 @@ import paho.mqtt.client as mqtt
 
 PORT = 8080
 COMMUNITYSTRING = os.environ['COMMUNITYSTRING']
+if not COMMUNITYSTRING:
+    # An empty community makes pysnmp drop every trap without a log line.
+    raise SystemExit('COMMUNITYSTRING is empty: set FAC_COMMUNITYSTRING in .env '
+                     'to the community configured in the fire alarm panel')
 
 
 class App(Thread):
